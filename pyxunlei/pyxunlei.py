@@ -59,24 +59,12 @@ class XunLeiClient():
         self.device_name = device_name
         self.http_endpoint = f"{'https' if ssl else 'http'}://{host}:{port}"
         
-        # 创建session并测试连接
-        self._session = self._create_session()
+        # 测试连接
+        self.is_connected()
         # 获取device_id
         self.get_device_id()
         # 初始化下载目录
         self._init_download_directory(download_root_dir)
-
-    @property
-    def headers(self):
-        return {
-            'pan-auth': self.get_pan_auth(),
-            'DNT': '1',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'device-space': '',
-            'content-type': 'application/json',
-            'Accept': '*/*',
-            'Accept-Language': 'zh-CN,zh;q=0.9'
-        }
 
     def is_connected(self) -> bool:
         """测试与迅雷服务的连接是否正常"""
@@ -92,19 +80,16 @@ class XunLeiClient():
             return False
 
     def get_pan_auth(self):
+        """获取认证令牌"""
         if self._token_str is not None and self._token_time + 600 > int(time.time()):
             return self._token_str
             
         try:
-            url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/"
-            logger.info(f"正在请求认证信息: {url}")
+            url = "webman/3rdparty/pan-xunlei-com/index.cgi/"
+            logger.info(f"正在请求认证信息")
             
-            resp = self._session.get(url, timeout=30)
+            resp = self._make_request('GET', url)
             
-            if resp.status_code != 200:
-                logger.error(f"响应内容: {resp.text}")
-                return ""
-                
             uiauth = r'function uiauth\(value\){ return "(.*)" }'
             matches = re.findall(uiauth, resp.text)
             
@@ -127,25 +112,20 @@ class XunLeiClient():
         
         try:
             logger.info("正在从服务器获取设备ID...")
-            info_watch = "/webman/3rdparty/pan-xunlei-com/index.cgi/device/info/watch"
+            info_watch = "webman/3rdparty/pan-xunlei-com/index.cgi/device/info/watch"
             token = self.get_pan_auth()
             
             if not token:
                 raise ValueError("获取认证令牌失败")
             
             logger.debug(f"正在请求 {info_watch} 获取设备信息")
-            req = self._session.post(
-                self.http_endpoint + info_watch,
-                headers={'pan-auth': token}, 
+            data = self._make_request(
+                'POST',
+                info_watch,
+                headers={'pan-auth': token},
                 timeout=30
             )
             
-            if req.status_code != 200:
-                logger.error(f"请求失败，状态码: {req.status_code}")
-                logger.error(f"响应内容: {req.text}")
-                req.raise_for_status()
-            
-            data = req.json()
             self._device_id = data.get("target")
             
             if not self._device_id:
@@ -154,15 +134,13 @@ class XunLeiClient():
             
             logger.info(f"成功获取设备ID: {self._device_id}")
             return self._device_id
-        
-        except requests.exceptions.RequestException as e:
-            logger.error(f"获取设备ID时发生网络错误: {str(e)}")
-            raise
+            
         except Exception as e:
             logger.error(f"获取设备ID时出错: {str(e)}")
             raise ValueError(f"获取设备ID失败: {str(e)}")
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> dict:
+        """发送 HTTP 请求的通用方法"""
         try:
             if endpoint.startswith('http'):
                 url = endpoint
@@ -171,7 +149,27 @@ class XunLeiClient():
                     endpoint = '/' + endpoint
                 url = f"{self.http_endpoint}{endpoint}"
             
-            headers = kwargs.pop('headers', self.headers)
+            # 创建 session 来维持 cookies
+            session = requests.Session()
+            session.auth = ('admin', 'admin') # 迅雷Docker网页的登录密码, 具体查看基于Docker版本: https://github.com/cnk3x/xunlei
+
+            
+            # 默认 headers
+            default_headers = {
+                'DNT': '1',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'device-space': '',
+                'content-type': 'application/json',
+                'Accept': '*/*',
+                'Accept-Language': 'zh-CN,zh;q=0.9'
+            }
+            
+            # 如果不是获取 pan-auth 的请求，则添加 pan-auth header
+            if not endpoint.endswith('index.cgi/'):
+                default_headers['pan-auth'] = self.get_pan_auth()
+            
+            # 合并自定义 headers
+            headers = {**default_headers, **kwargs.pop('headers', {})}
             
             logger.info(f"正在发送 {method} 请求到: {url}")
             logger.debug(f"请求头: {headers}")
@@ -180,7 +178,12 @@ class XunLeiClient():
             if 'data' in kwargs:
                 logger.debug(f"请求体: {kwargs['data']}")
             
-            response = self._session.request(method, url, headers=headers, **kwargs)
+            response = session.request(
+                method,
+                url,
+                headers=headers,
+                **kwargs
+            )
             
             if response.status_code != 200:
                 logger.error(f"请求失败，状态码: {response.status_code}")
@@ -188,6 +191,10 @@ class XunLeiClient():
                 logger.error(f"响应内容: {response.text}")
             
             response.raise_for_status()
+            
+            # 对于获取 pan-auth 的请求，直接返回响应对象
+            if endpoint.endswith('index.cgi/'):
+                return response
             
             result = response.json()
             logger.debug(f"响应状态码: {response.status_code}")
@@ -197,6 +204,7 @@ class XunLeiClient():
                 raise PanAuthInvalid(result.get('error'))
             
             return result
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"请求失败: {str(e)}")
             logger.error(f"请求URL: {url}")
@@ -279,14 +287,22 @@ class XunLeiClient():
         Returns:
             List: 任务列表
         """
-        url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/tasks?space={quote(self._device_id)}&page_token=&filters=%7B%22phase%22%3A%7B%22in%22%3A%22PHASE_TYPE_COMPLETE%22%7D%2C%22type%22%3A%7B%22in%22%3A%22user%23download-url%2Cuser%23download%22%7D%7D&limit=200&device_space="
-        data = self._session.get(url, headers=self.headers).json()
+        url = "webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/tasks"
+        params = {
+            "space": quote(self._device_id),
+            "page_token": "",
+            "filters": "{\"phase\":{\"in\":\"PHASE_TYPE_COMPLETE\"},\"type\":{\"in\":\"user#download-url,user#download\"}}",
+            "limit": "200",
+            "device_space": ""
+        }
+        
+        data = self._make_request('GET', url, params=params)
         tasks = data.get('tasks')
         if not tasks:
             return []
         res = []
         for task in tasks:
-            progress =  task.get('progress') if task.get('progress') else 0
+            progress = task.get('progress') if task.get('progress') else 0
             res.append(TaskInfo(
                 name=task.get('name'),
                 file_name=task.get('name'),
@@ -306,14 +322,22 @@ class XunLeiClient():
         Returns:
             List[TaskInfo]: _description_
         """
-        url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/tasks?space={quote(self._device_id)}&page_token=&filters=%7B%22phase%22%3A%7B%22in%22%3A%22PHASE_TYPE_PENDING%2CPHASE_TYPE_RUNNING%2CPHASE_TYPE_PAUSED%2CPHASE_TYPE_ERROR%22%7D%2C%22type%22%3A%7B%22in%22%3A%22user%23download-url%2Cuser%23download%22%7D%7D&limit=200&device_space="
-        data = self._session.get(url, headers=self.headers).json()
+        url = "webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/tasks"
+        params = {
+            "space": quote(self._device_id),
+            "page_token": "",
+            "filters": "{\"phase\":{\"in\":\"PHASE_TYPE_PENDING,PHASE_TYPE_RUNNING,PHASE_TYPE_PAUSED,PHASE_TYPE_ERROR\"},\"type\":{\"in\":\"user#download-url,user#download\"}}",
+            "limit": "200",
+            "device_space": ""
+        }
+        
+        data = self._make_request('GET', url, params=params)
         tasks = data.get('tasks')
         if not tasks:
             return []
         res = []
         for task in tasks:
-            progress =  task.get('progress') if task.get('progress') else 0
+            progress = task.get('progress') if task.get('progress') else 0
             res.append(TaskInfo(
                 file_name=task.get('name'),
                 name=task.get('name'),
@@ -337,12 +361,12 @@ class XunLeiClient():
 
     def download_magnetic(self, magnetic_link: str, sub_dir: str = '', preprocess_files=None) -> int:
         """下载磁力链接
-
+        
         Args:
             magnetic_link (str): 磁力链接
             sub_dir (str, optional): 子目录，不为空时将新建子目录下载 Defaults to ''.
             preprocess_files (_type_, optional): 添加任务的回调函数，会传入文件列表，要求返回文件列表.可以在此函数中实现过滤下载文件的操作 Defaults to None.
-
+        
         Returns:
             int: 三种情况:
                 0: 失败
@@ -353,19 +377,19 @@ class XunLeiClient():
             logger.info(f"开始处理磁力链接下载: {magnetic_link}")
 
             # 提取文件 list
-            url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/resource/list?device_space="
+            url = "webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/resource/list"
+            params = {"device_space": ""}
             body = {"urls": magnetic_link}
             
             logger.info("正在获取资源列表...")
-            response = self._session.post(
-                url, headers=self.headers, data=json.dumps(body), timeout=60)
+            data = self._make_request(
+                'POST',
+                url,
+                params=params,
+                json=body,
+                timeout=60
+            )
             
-            if response.status_code != 200:
-                logger.error(f"获取资源列表失败: HTTP {response.status_code}")
-                logger.error(f"响应内容: {response.text}")
-                return 0
-            
-            data = response.json()
             if not data.get('list', {}).get('resources'):
                 logger.error(f"未找到资源: {data}")
                 return 0
@@ -412,13 +436,22 @@ class XunLeiClient():
                 if "/" in sub_dir:
                     logger.error("Multilevel subdirectories are not supported")
                     return False
-                body = {"parent_id": self._parent_folder_id, "name": sub_dir,
-                        "space": self._device_id, "kind": "drive#folder"}
-                response = self._session.post(
-                    f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/files?device_space=", headers=self.headers, data=json.dumps(body))
-                target_parent_id = response.json().get('file').get('id')
+                body = {
+                    "parent_id": self._parent_folder_id, 
+                    "name": sub_dir,
+                    "space": self._device_id, 
+                    "kind": "drive#folder"
+                }
+                
+                result = self._make_request(
+                    'POST',
+                    "webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/files",
+                    params={"device_space": ""},
+                    json=body
+                )
+                target_parent_id = result.get('file').get('id')
 
-            logger.info(f"正在提交下载任务: {task_name}")
+            # 提交下载任务
             body = {
                 "type": "user#download-url",
                 "name": task_name,
@@ -435,15 +468,17 @@ class XunLeiClient():
                 }
             }
             
-            response = self._session.post(
-                f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/task?device_space=",
-                headers=self.headers,
-                data=json.dumps(body)
+            result = self._make_request(
+                'POST',
+                "webman/3rdparty/pan-xunlei-com/index.cgi/drive/v1/task",
+                params={"device_space": ""},
+                json=body
             )
             
-            result = response.json()
             if result.get('HttpStatus') == 0:
+                task_id = result.get('task', {}).get('id')
                 logger.info(f"任务创建成功: {task_name}")
+                logger.info(f"任务ID: {task_id}")
                 return 1
             else:
                 logger.error(f"任务创建失败: {result}")
@@ -505,7 +540,7 @@ class XunLeiClient():
             bool: 删除成功返回True，失败返回False
         """
         try:
-            logger.info(f"Deleting task with ID: {task_id}")
+            logger.info(f"删除任务 任务ID: {task_id}")
             
             if not self._device_id:
                 self._device_id = self.get_device_id()
@@ -525,28 +560,22 @@ class XunLeiClient():
                 }
             }
             
-            response = self._session.post(
+            result = self._make_request(
+                'POST',
                 url, 
                 params=params,
-                headers=self.headers,
                 json=data
             )
             
-            if response.status_code != 200:
-                logger.error(f"Request failed with status code: {response.status_code}")
-                response.raise_for_status()
-                
-            result = response.json()
-            
             if result.get('error_code', 0) == 0:
-                logger.info(f"Successfully deleted task: {task_id}")
+                logger.info(f"删除任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"Failed to delete task: {result}")
+                logger.error(f"删除任务失败: {result}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error deleting task {task_id}: {str(e)}")
+            logger.error(f"删除任务 {task_id} 时发生错误: {str(e)}")
             return False
 
     def pause_task(self, task_id: str) -> bool:
@@ -559,7 +588,7 @@ class XunLeiClient():
             bool: 暂停成功返回True，失败返回False
         """
         try:
-            logger.info(f"暂停任务，ID: {task_id}")
+            logger.info(f"暂停任务 任务ID: {task_id}")
             
             if not self._device_id:
                 self._device_id = self.get_device_id()
@@ -579,17 +608,15 @@ class XunLeiClient():
                 }
             }
             
-            response = self._session.post(
+            result = self._make_request(
+                'POST',
                 url,
                 params=params,
-                headers=self.headers,
                 json=data
             )
             
-            result = response.json()
-            
             if result.get('error_code', 0) == 0:
-                logger.info(f"成功暂停任务: {task_id}")
+                logger.info(f"暂停任务成功: {task_id}")
                 return True
             else:
                 logger.error(f"暂停任务失败: {result}")
@@ -600,21 +627,14 @@ class XunLeiClient():
             return False
 
     def start_task(self, task_id: str) -> bool:
-        """开始/继续指定的下载任务
-
-        Args:
-            task_id (str): 任务ID
-
-        Returns:
-            bool: 开始成功返回True，失败返回False
-        """
+        """开始/继续指定的下载任务"""
         try:
             logger.info(f"开始任务，ID: {task_id}")
             
             if not self._device_id:
                 self._device_id = self.get_device_id()
             
-            url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/method/patch/drive/v1/task"
+            url = "webman/3rdparty/pan-xunlei-com/index.cgi/method/patch/drive/v1/task"
             params = {
                 'pan_auth': self.get_pan_auth(),
                 'device_space': ''
@@ -629,14 +649,12 @@ class XunLeiClient():
                 }
             }
             
-            response = self._session.post(
+            result = self._make_request(
+                'POST',
                 url,
                 params=params,
-                headers=self.headers,
                 json=data
             )
-            
-            result = response.json()
             
             if result.get('error_code', 0) == 0:
                 logger.info(f"成功开始任务: {task_id}")
@@ -648,37 +666,3 @@ class XunLeiClient():
         except Exception as e:
             logger.error(f"开始任务 {task_id} 时发生错误: {str(e)}")
             return False
-
-    def _create_session(self) -> requests.Session:
-        """创建并配置 requests session"""
-        session = requests.Session()
-        
-        session.auth = ('licheng', '996633')
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Content-Type": "application/json",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
-        }
-        session.headers.update(headers)
-        
-        try:
-            login_url = f"{self.http_endpoint}/webman/3rdparty/pan-xunlei-com/index.cgi/"
-            logger.info(f"正在获取初始Cookie: {login_url}")
-            
-            response = session.get(login_url)
-            logger.info(f"初始响应状态码: {response.status_code}")
-            logger.info(f"获取到的Cookie: {dict(session.cookies)}")
-            
-            if response.status_code == 200:
-                logger.info("成功获取初始Cookie")
-            else:
-                logger.error(f"获取初始Cookie失败，状态码: {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"初始化Cookie时发生错误: {e}")
-        
-        return session
