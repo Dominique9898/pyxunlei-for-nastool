@@ -1,18 +1,32 @@
 [tool.poetry]
-name = "pyxunlei"
-version = "0.1.7"
-description = "Docker版本迅雷 API Client"
-authors = ["huihuidehui <kanhuihui@163.com>"]
+name = "pyxunlei-for-nastool"
+version = "0.1.0"
+description = "基于Docker版本的迅雷API客户端，可作为NAStool的下载器插件使用"
+authors = ["dominikwei <dominikwei9988@outlook.com>", "huihuidehui <kanhuihui@163.com>"]
 readme = "README.md"
-repository = "https://github.com/huihuidehui/pyxunlei"
+repository = "https://github.com/Dominique9898/pyxunlei-for-nastool"
+keywords = ["xunlei", "download", "docker", "nastool", "nas"]
+packages = [
+    { include = "pyxunlei" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+]
 
 [tool.poetry.dependencies]
-python = "^3.6"
+python = "^3.10"
 loguru = "^0.7.2"
 requests = "^2.31.0"
 pydantic = "^2.6.0"
 torrentool = "^1.2.0"
-
+python-dateutil = "^2.8.2"
+urllib3 = "^2.0.0"
+typing-extensions = "^4.0.0"
+charset-normalizer = "^3.0.0"
 
 [build-system]
 requires = ["poetry-core"]

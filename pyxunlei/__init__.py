@@ -1,1 +1,3 @@
-from .pyxunlei import XunLeiClient
+from .pyxunlei import *
+
+__version__ = "0.1.0"
